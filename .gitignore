@@ -1,0 +1,31 @@
+### .NET ###
+bin/
+obj/
+*.dll
+*.pdb
+*.cache
+
+### Python ###
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+### IDE ###
+.vs/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+### Project Specific ###
+converted_tools.json
+output.txt
+
+### macOS ###
+.DS_Store
+
+### Logs and databases ###
+*.log
+*.sqlite
