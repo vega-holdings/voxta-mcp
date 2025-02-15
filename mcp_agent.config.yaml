@@ -1,0 +1,22 @@
+execution_engine: asyncio
+logger:
+  type: console
+  level: debug
+  batch_size: 100
+  flush_interval: 2
+  max_queue_size: 2048
+
+mcp:
+  servers:
+    notion:
+      command: "node"
+      args:
+        - "/mnt/samesung/ai/mcp/mcp-notion-server/notion/build/index.js"
+      env:
+        NOTION_API_TOKEN: "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"
+    filesystem:
+      command: "npx"
+      args:
+        - "-y"
+        - "@modelcontextprotocol/server-filesystem"
+        - "/home/vega"

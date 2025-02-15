@@ -1,0 +1,5 @@
+/mnt/samesung/ai/dev/Voxta.SampleProviderApp.v1.0.0-beta.139/obj/Debug/net8.0/Voxta.SampleProviderApp.csproj.AssemblyReference.cache
+/mnt/samesung/ai/dev/Voxta.SampleProviderApp.v1.0.0-beta.139/obj/Debug/net8.0/Voxta.SampleProviderApp.GeneratedMSBuildEditorConfig.editorconfig
+/mnt/samesung/ai/dev/Voxta.SampleProviderApp.v1.0.0-beta.139/obj/Debug/net8.0/Voxta.SampleProviderApp.AssemblyInfoInputs.cache
+/mnt/samesung/ai/dev/Voxta.SampleProviderApp.v1.0.0-beta.139/obj/Debug/net8.0/Voxta.SampleProviderApp.AssemblyInfo.cs
+/mnt/samesung/ai/dev/Voxta.SampleProviderApp.v1.0.0-beta.139/obj/Debug/net8.0/Voxta.SampleProviderApp.csproj.CoreCompileInputs.cache

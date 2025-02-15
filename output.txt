@@ -1,0 +1,265 @@
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Newtonsoft.Json;
+using System.Diagnostics;
+using System.Text;
+using Voxta.Model.Shared;
+using Voxta.Model.WebsocketMessages.ClientMessages;
+using Voxta.Model.WebsocketMessages.ServerMessages;
+using Voxta.Providers.Host;
+using Newtonsoft.Json.Linq; // Add this for JArray
+
+namespace Voxta.VoxtaMCPBridge;
+
+public class MCPBridgeProvider : ProviderBase
+{
+    private readonly ILogger<MCPBridgeProvider> _logger;
+    private readonly IConfiguration _configuration;
+    private Process _mcpClientProcess;
+    private StreamReader? _mcpClientOutput;
+    private StreamWriter? _mcpClientInput;
+    private readonly string _mcpClientScriptPath; // Store the path
+    private readonly string _pythonExePath;
+    private List<ActionDefinition> _availableActions = new(); // Store available actions
+
+
+     public class McpResponse // Create a class for responses
+     {
+        public string? Result { get; set; }
+        public string? Error { get; set; }
+     }
+     public class ToolInfo //class to get tool info
+    {
+        public string Name { get; set; } = string.Empty;
+        public string Description { get; set; } = string.Empty;
+        public Dictionary<string, object> Parameters { get; set; } = new(); // Or more specific type if you know the structure
+    }
+
+
+    public MCPBridgeProvider(IRemoteChatSession session, ILogger<MCPBridgeProvider> logger, IConfiguration configuration)
+        : base(session, logger)
+    {
+        _logger = logger;
+        _configuration = configuration;
+        _mcpClientProcess = new();
+
+        // Get the script path and python path from configuration.  CRITICAL.
+        _mcpClientScriptPath = _configuration["MCPBridge:MCPClientScriptPath"] ?? string.Empty;
+        _pythonExePath = _configuration["MCPBridge:PythonExePath"] ?? "python3"; // Default to "python3"
+
+         if (string.IsNullOrEmpty(_mcpClientScriptPath))
+        {
+            _logger.LogError("MCPClientScriptPath is not configured in appsettings.json");
+            // Consider throwing an exception here, or setting a flag to prevent further execution,
+            // since the provider can't function without the script path.
+        }
+    }
+
+    protected override async Task OnStartAsync()
+    {
+       await base.OnStartAsync();
+        _logger.LogInformation("Starting MCPBridgeProvider...");
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = _pythonExePath,  // Use the configured path
+            Arguments = _mcpClientScriptPath,   // and script path
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true, // Capture stderr
+            CreateNoWindow = true,      // Don't show a Python window
+            StandardInputEncoding = Encoding.UTF8, // Correct encoding
+            StandardOutputEncoding = Encoding.UTF8,
+
+        };
+
+        try
+        {
+            _mcpClientProcess.StartInfo = startInfo;
+            if (!_mcpClientProcess.Start()) //check if it starts
+            {
+                _logger.LogError("Failed to start Python MCP client process");
+                return;
+            }
+            _mcpClientOutput = _mcpClientProcess.StandardOutput;
+            _mcpClientInput = _mcpClientProcess.StandardInput;
+
+            // Set up error handling
+            _mcpClientProcess.ErrorDataReceived += (sender, args) =>
+            {
+                if (!string.IsNullOrEmpty(args.Data))
+                {
+                    _logger.LogError("Python MCP client error: {Error}", args.Data);
+                }
+            };
+            _mcpClientProcess.BeginErrorReadLine(); // Start async error reading
+            await GetAndRegisterTools(); //get tools
+
+             HandleMessage<ServerActionMessage>(OnVoxtaActionTriggered);
+             _logger.LogInformation("MCPBridgeProvider started successfully");
+
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error starting Python MCP client process");
+            // Consider additional error handling, like setting a flag to prevent further operation.
+        }
+    }
+    private async Task GetAndRegisterTools()
+    {
+       if (_mcpClientInput == null || _mcpClientOutput == null)
+       {
+           _logger.LogError("Cannot get tools: mcpClientInput or mcpClientOutput is null.");
+           return;
+       }
+
+       try{
+            //send method to python script
+            await _mcpClientInput.WriteLineAsync(JsonConvert.SerializeObject(new { method = "get_tools" }));
+            await _mcpClientInput.FlushAsync();
+
+            //get tools from the python script
+            var toolsJson = await _mcpClientOutput.ReadLineAsync();
+
+            if (string.IsNullOrEmpty(toolsJson))
+            {
+                _logger.LogError("Received empty tool list from Python agent.");
+                return;
+            }
+            _logger.LogInformation($"Tools: {toolsJson}"); //log out tools to check
+
+            //deserialize to toolinfo object
+            var response = JsonConvert.DeserializeObject<Dictionary<string, object>>(toolsJson);
+
+            if (response == null || !response.ContainsKey("tools") || !(response["tools"] is JArray))
+            {
+            _logger.LogError("Invalid tool list format received from Python agent.");
+            return;
+            }
+            //cast tools object as list
+            var tools = ((JArray)response["tools"]).ToObject<List<ToolInfo>>();
+
+            if (tools == null)
+            {
+            _logger.LogError("Unable to get tool information");
+            return;
+            }
+
+            //now register with voxta
+            Send(new ClientUpdateContextMessage
+            {
+                SessionId = SessionId,
+                ContextKey = "NotionActions", // Use notion and not sample
+                Actions = tools.Select(tool => new ActionDefinition
+                {
+                    Name = tool.Name,
+                    Layer = "notion", // Use a consistent layer name
+                    Description = tool.Description,
+                    //Arguments = new List<FunctionArgumentDefinition>(), <---  Remove, this should come from notion mcp
+                    Arguments = MapArguments(tool.Parameters)
+                }).ToList()
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error while getting and registering tools");
+        }
+    }
+        //Helper function to map tool arguments, from notion mcp
+        private List<FunctionArgumentDefinition> MapArguments(Dictionary<string, object> parameters)
+        {
+            var argumentDefinitions = new List<FunctionArgumentDefinition>();
+            if(parameters != null){
+
+            
+                foreach (var param in parameters)
+                {
+                    // Extract the properties from the dynamic object.  The Notion MCP server
+                    // should be providing these in the expected format.
+                    //Using ExpandoObject for dynamic properties
+                    if (param.Value is Newtonsoft.Json.Linq.JObject jObject)
+                    {
+                        // Now you can work with jobject
+                        var dict = jObject.ToObject<Dictionary<string, object>>();
+
+                        // Now you can access properties
+                        var type = dict.ContainsKey("type") ? dict["type"]?.ToString() : null;
+                        var description = dict.ContainsKey("description") ? dict["description"]?.ToString() : null;
+                        var items = dict.ContainsKey("items") ? dict["items"]?.ToString() : null; //for array types
+                        var enumValues = dict.ContainsKey("enum") ? dict["enum"]?.ToString() : null;  //for enum
+
+                        FunctionArgumentType? argumentType = null;
+                        if (!string.IsNullOrEmpty(type))
+                        {
+                            argumentType = type.ToLower() switch
+                            {
+                                "string" => FunctionArgumentType.String,
+                                "number" => FunctionArgumentType.Number,
+                                "integer" => FunctionArgumentType.Integer,
+                                "boolean" => FunctionArgumentType.Boolean,
+                                "array" => FunctionArgumentType.Array,
+                                "object" => FunctionArgumentType.Object, //not sure if this is right here.
+                                _ => null // Unknown type.
+                            };
+
+                        }
+                       
+
+                        if(argumentType != null) {
+                         argumentDefinitions.Add(new FunctionArgumentDefinition
+                            {
+                                Name = param.Key,
+                                Type = argumentType.Value, // Use the enum
+                                Description = description ?? "",  // Provide a default
+                                //Items = items, //not sure about this
+                                //Enum = enumValues, //not sure about this
+                                Required = false,  //  set this based on information from agent.
+
+                            });
+                        }else
+                        {
+                            _logger.LogWarning($"Skipping unknown argument type: {type}, for: {param.Key}");
+                        }
+                    }
+                }
+            }
+
+            return argumentDefinitions;
+        }
+
+
+    protected override async Task OnStopAsync()
+    {
+        _logger.LogInformation("Stopping MCPBridgeProvider...");
+
+        try
+        {
+            if (_mcpClientProcess is not null && !_mcpClientProcess.HasExited)
+            {
+                // Send quit command to python process
+                await _mcpClientInput.WriteLineAsync(JsonConvert.SerializeObject(new { method = "quit" }));
+                await _mcpClientInput.FlushAsync();
+                await Task.Delay(100); //wait for it to close
+                _mcpClientInput.Close();
+
+                if (!_mcpClientProcess.WaitForExit(5000)) // 5-second timeout
+                {
+                    _mcpClientProcess.Kill(); // Forcefully kill if it doesn't exit
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error during MCPBridgeProvider shutdown");
+        }
+
+        await base.OnStopAsync();
+    }
+    //removed and no longer used
+   //private async void OnVoxtaActionTriggered(ServerActionMessage message)
+   // {
+        //not doing anythign with actions here now.
+
+   // }
+}
